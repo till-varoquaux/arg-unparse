@@ -84,12 +84,12 @@ let maybe_quote s =
   else
     s
 
-let err_handler name fmt exn =
+let err_handler program_name fmt exn =
   let gram = Kernel.gram fmt in
-  let usage = "usage: " ^ name ^%^ String.uppercase (Doc.to_string gram) in
+  let usage = String.uppercase (Doc.to_string gram) in
   match exn with
   | Help ->
-      Parse_opt.help_msg ~usage (Kernel.flags fmt);
+      Parse_opt.print_help_msg ?program_name ~usage (Kernel.flags fmt);
       exit 0
   | Kernel.Extra_arguments l ->
       prerr_endline usage;
@@ -107,7 +107,7 @@ let err_handler name fmt exn =
 
 let argv () = List.tl (Array.to_list Sys.argv)
 
-let run ?(name=program_name ()) ?(args=argv ()) fmt =
+let run ?name ?(args=argv ()) fmt =
   let fmt = help () ++ fmt in
   let flags = Kernel.flags fmt in
   let annon,flagged = Parse_opt.get_all flags args in
@@ -116,19 +116,18 @@ let run ?(name=program_name ()) ?(args=argv ()) fmt =
 (** we take the accumulator and make it an int... *)
 let set_acc fmt f = mapf fmt ~f:(fun () -> f)
 
-type 'a choice = (string -> 'a) Parse_opt.Multi.t
+type 'a choice = 'a Parse_opt.Multi.t
 
 let choice ?group ~descr ~name ~f fmt =
   { Parse_opt.Multi.name;
     descr;
     group;
-    choice = fun args pgm_name ->
+    choice = fun args ->
       run
-        ~name:(pgm_name ^ " " ^ name)
+        ~name
         ~args
         fmt
         f }
 
-let multi_run ?(name=Util.program_name ()) choices =
-  let v = Parse_opt.Multi.run ~name choices in
-  v name
+let multi_run ?name (choices:'a choice list) : 'a =
+ Parse_opt.Multi.run ?program_name:name choices

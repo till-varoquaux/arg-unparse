@@ -1,4 +1,3 @@
-(* Definition of a flag *)
 (*
   Posix specification:
 
@@ -9,7 +8,7 @@
 
 *)
 
-(* Describes an option. *)
+(* An option. *)
 type 'a t
 
 val create :
@@ -35,8 +34,13 @@ type 'a cursor
 val init : 'a t list -> string list -> 'a cursor
 val get : 'a cursor -> 'a res
 
-val help_msg : ?header:string -> ?footer:string -> usage:string -> _ t list -> unit
-
+val print_help_msg :
+  ?header:string
+  -> ?footer:string
+  -> ?program_name:string
+  -> ?usage:string
+  -> _ t list
+  -> unit
 
 val get_all : 'a t list -> string list -> string list * 'a list
 
@@ -50,5 +54,9 @@ module Multi : sig
     descr : string
   }
 
-  val run : ?name:string -> ?args:string list -> 'a t list -> 'a
+  val run :
+    ?program_name:string
+    -> ?args:string list
+    -> 'a t list
+    -> 'a
 end
