@@ -3,7 +3,7 @@ open MoreLabels
 open Util
 include Kernel
 exception Help
-exception In_flag of Parse_opt.t * exn
+exception In_flag of Kernel.option_value Parse_opt.t * exn
 
 let int name = create ~name int_of_string
 let string name = create ~name (fun s -> s)

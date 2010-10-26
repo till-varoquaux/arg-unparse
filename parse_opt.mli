@@ -1,25 +1,44 @@
-type t = {
-  descr   : string;
-  arg     : string option;
-  group   : string option;
-  long    : string;
-  short   : char option
-}
+(* Definition of a flag *)
+(*
+  Posix specification:
 
-type res =
+  http://www.opengroup.org/onlinepubs/009695399/basedefs/xbd_chap12.html
+
+  GNU specification (adds long options to posix):
+  http://www.gnu.org/s/libc/manual/html_node/Argument-Syntax.html#Argument-Syntax
+
+*)
+
+(* Describes an option. *)
+type 'a t
+
+val create :
+  ?group:string
+  -> ?short:char
+  -> arg:[ `No_arg of 'a | `Arg of string * (string -> 'a) ]
+  -> descr:string
+  -> string
+  -> 'a t
+
+val long : _ t -> string
+
+val to_string : _ t -> string
+
+type 'a res =
   | Eof
   | Annon of string
-  | Flag of t * string option
+  | Flag of 'a
 
-type acc
+type 'a cursor
 
-val input : t list -> string list -> acc
+(* Cursor based reading... *)
+val init : 'a t list -> string list -> 'a cursor
+val get : 'a cursor -> 'a res
 
-val get : acc -> res
-val help_msg : ?header:string -> ?footer:string -> usage:string -> t list -> unit
-val to_string : t -> string
+val help_msg : ?header:string -> ?footer:string -> usage:string -> _ t list -> unit
 
-val get_all : t list -> string list -> string list * (t * string option) list
+
+val get_all : 'a t list -> string list -> string list * 'a list
 
 (** Multi.... *)
 module Multi : sig

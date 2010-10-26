@@ -14,16 +14,16 @@ open MoreLabels
 exception Not_enough_arguments
 exception Extra_arguments of string list
 
+type option_value = string * string option
+
 type inputs = {
   i_annon : string list;
-  i_flags : (Parse_opt.t * string option) list
+  i_flags : option_value list
 }
 
 let flag_to_string = function
-  | f,None -> Parse_opt.to_string f
-  | f,Some v -> Printf.sprintf "%s:%s\n%!"
-      (Parse_opt.to_string f)
-        v
+  | f,None   -> f
+  | f,Some v -> Printf.sprintf "%s:%s\n%!" f v
 
 let inputs_to_string inputs =
   Printf.sprintf "%s||%s"
@@ -47,7 +47,7 @@ type (+'perm,-'acc,+'cont) t = {f:'ret.
   -> fallback:(unit -> 'ret) option
   -> fail:(exn ->'ret)
   -> 'ret;
-  flags: Parse_opt.t list;
+  flags: option_value Parse_opt.t list;
   gram  : Doc.t }
 constraint 'perm = [< perm > `Linear ]
 
@@ -118,21 +118,15 @@ let set_gram v gram = { v with gram}
 
 let flag ?short ?group ~descr long v =
   let arg =
-    if v.gram = Doc.empty then None
-    else Some (Doc.to_string v.gram)
+    if v.gram = Doc.empty then `No_arg (long,None)
+    else `Arg ((Doc.to_string v.gram),(fun v -> long,Some v))
   in
-  let flag = {
-    Parse_opt.arg;
-    long      = long;
-    short     = short;
-    descr     = descr;
-    group     = group
-  } in
+  let flag = Parse_opt.create ?short ?group ?arg ~descr long in
   { gram = Doc.empty;
     flags = [flag];
     f =  fun inputs ~acc ~cont ~fallback:_ ~fail ->
-        if List.mem_assoc flag ~map:inputs.i_flags then
-          let args_list = match List.assoc flag inputs.i_flags with
+        if List.mem_assoc long ~map:inputs.i_flags then
+          let args_list = match List.assoc long inputs.i_flags with
             | Some v -> [v]
             | None -> []
           in
@@ -163,17 +157,21 @@ let (<|>) x y =
             ~fallback:(Some (fun () -> y.f inputs ~acc ~cont ~fallback ~fail))
             ~fail }
 
+(* Flag choice. (Fiendish one...) *)
 let (<!>) x y =
   let flags = x.flags @ y.flags in
   { gram = Doc.empty;
     flags;
     f = fun inputs ~acc ~cont ~fallback ~fail ->
+      let matches long (f:_ Parse_opt.t) =
+        Parse_opt.long f = long
+      in
       let v =
         List.fold_left inputs.i_flags
-          ~f:(fun acc (flag,_) ->
-                if List.mem flag ~set:x.flags then
+          ~f:(fun acc (long,_) ->
+                if List.exists ~f:(matches long) x.flags then
                   x
-                else if List.mem flag ~set:y.flags then
+                else if List.exists ~f:(matches long) y.flags then
                   y
                 else
                   acc

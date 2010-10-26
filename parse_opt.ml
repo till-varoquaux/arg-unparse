@@ -4,13 +4,24 @@ exception Unknown_flag     of string
 exception Missing_argument of string
 exception Flag_doesnt_take_an_argument of string
 
-type t = {
-  descr   : string;
-  arg     : string option;
-  group   : string option;
+type 'a flag_arg_spec = [
+  | `No_arg of 'a
+  | `Arg of string * (string -> 'a)
+]
+
+type 'a t = {
   long    : string;
-  short   : char option
+  descr   : string;
+  arg     : 'a flag_arg_spec;
+  group   : string option;
+  short   : char option;
 }
+
+let create ?group ?short ~arg ~descr long = {
+  long;descr;arg;group;short
+}
+
+let long v = v.long
 
 let help_msg ?header ?footer ~usage flags =
   let has_short =
@@ -23,8 +34,8 @@ let help_msg ?header ?footer ~usage flags =
     ~name:(fun flag ->
              let long =
                match flag.arg with
-               | None   -> Printf.sprintf "--%s" flag.long
-               | Some v -> Printf.sprintf "--%s=%s" flag.long
+               | `No_arg _  -> Printf.sprintf "--%s" flag.long
+               | `Arg (v,_) -> Printf.sprintf "--%s=%s" flag.long
                    (String.uppercase v)
              in
              match flag with
@@ -46,8 +57,8 @@ let to_string_main f =
 let to_string f =
   let main = to_string_main f in
   match f with
-  | {arg = None;_} -> main
-  | {arg = Some g;_} -> main ^ " " ^ g
+  | {arg = `No_arg _ ;_} -> main
+  | {arg = `Arg (g,_);_} -> main ^ " " ^ g
 
 let is_short s =
   let len = String.length s in
@@ -75,13 +86,13 @@ type state =
   | St_short of (int * string)
   | St_annon (* We've already seen -- all arguments from now on are anonymous *)
 
-type res =
+type 'a res =
   | Eof
   | Annon of string
-  | Flag of t * string option
+  | Flag of 'a
 
-type acc = {
-  flags : t list;
+type 'a cursor = {
+  flags : 'a t list;
   mutable state : state;
   mutable remaining : string list;
 }
@@ -89,11 +100,10 @@ type acc = {
 let short_arg flag state = match state with
   | {state=St_short (pos,f);_} ->
       state.state <- St_normal;
-      let arg = String.sub f ~pos ~len:(String.length f - pos) in
-      Flag (flag,Some arg)
+      String.sub f ~pos ~len:(String.length f - pos)
   | {state=St_normal;remaining=h::t;_} ->
       state.remaining <- t;
-      Flag (flag,Some h)
+      h
   | {state=St_annon;_} ->
       (* TODO: comment why this is impossible *)
       assert false
@@ -113,7 +123,7 @@ let split_long s =
   with Not_found ->
     s,None
 
-let rec get state =
+let rec get: 'a.'a cursor -> 'a res = fun state ->
   match state with
   | {state=St_short (pos,f);flags;_} ->
       if pos+1 >= String.length f then begin
@@ -122,11 +132,10 @@ let rec get state =
         state.state <- St_short (pos+1,f)
       end;
       let flag = find_short ~flags f.[pos] in
-      if flag.arg <> None then
-        short_arg flag state
-      else begin
-        Flag (flag,None)
-      end
+      Flag (begin match flag.arg with
+            | `Arg (_,f) -> f (short_arg flag state)
+            | `No_arg v  -> v
+            end)
   | { remaining = h::t; state = St_annon;_ } ->
       state.remaining <- t;
       Annon h
@@ -143,54 +152,39 @@ let rec get state =
       end else if is_long h then
         let flag_name,arg = split_long h in
         let flag = find_long ~flags flag_name in
-        match flag.arg,arg,t with
-        | Some _,Some v,l |  Some _,None,v::l ->
-            state.remaining <- l;
-            Flag (flag,Some v)
-        | None,None,l ->
-            state.remaining <- l;
-            Flag (flag,None)
-        | Some _,None,[] ->
-            raise (Missing_argument flag_name)
-        | None,Some _,_ ->
-            raise (Flag_doesnt_take_an_argument flag_name)
+        Flag (match flag.arg,arg,t with
+              | `Arg (_,f),Some v,l | `Arg (_,f),None,v::l ->
+                  state.remaining <- l;
+                  f v
+              | `No_arg v,None,l ->
+                  state.remaining <- l;
+                  v
+              | `Arg _,None,[] ->
+                  raise (Missing_argument flag_name)
+              | `No_arg _ ,Some _,_ ->
+                  raise (Flag_doesnt_take_an_argument flag_name))
       else begin
         state.remaining <- t;
         Annon h
       end
 
-let input flags remaining = {
+let init flags remaining = {
   remaining;
   flags;
   state = St_normal
 }
 
 (** Grouping *)
-let rec rev_dedup acc = function
-  | [] -> acc
-  | h::t ->
-      if List.mem_assoc (fst h) ~map:acc then
-        rev_dedup acc t
-      else
-        rev_dedup  (h::acc) t
-
-let get_all flags args =
-  let input = input flags args in
-  let annon = ref []
-  and flags = ref []
-  in
-  let rec loop () =
-    match get input with
-    | Annon a ->
-        annon := a :: !annon;
-        loop ()
-    | Flag (f,v) ->
-        flags := (f,v) :: !flags;
-        loop ()
-    | Eof -> ()
-  in
-  loop ();
-  List.rev !annon,rev_dedup [] !flags
+let get_all : 'a.'a t list -> string list -> string list * 'a list =
+  fun flags args ->
+    let input = init flags args in
+    let rec loop flags annon =
+      match get input with
+      | Annon a -> loop flags (a :: annon)
+      | Flag v -> loop (v :: flags) annon
+      | Eof ->   List.rev annon,List.rev flags
+    in
+    loop [] []
 
 module Multi = struct
   type 'a t = {
