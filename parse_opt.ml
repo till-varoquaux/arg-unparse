@@ -1,199 +1,25 @@
 open StdLabels
 open MoreLabels
-exception Unknown_flag     of string
-exception Missing_argument of string
-exception Flag_doesnt_take_an_argument of string
 
-type 'a flag_arg_spec = [
-  | `No_arg of 'a
-  | `Arg of string * (string -> 'a)
-]
+exception Bad of string
+exception Help of string
 
-type 'a t = {
-  long    : string;
-  descr   : string;
-  arg     : 'a flag_arg_spec;
-  group   : string option;
-  short   : char option;
-}
-
-let create ?group ?short ~arg ~descr long = {
-  long;descr;arg;group;short
-}
-
-let long v = v.long
-
-(** [ pad_right s len ]  returns the string s padded to the length [len] with
-    whitespaces added to the left of the string *)
-let pad_right (s:string) (length:int) : string =
-  if  String.length s >= length then
-    s
-  else
-    let res = String.make length ' ' in
-    String.blit ~src:s ~src_pos:0 ~dst:res ~dst_pos:0 ~len:(String.length s);
-    res
-
-let group_by ~(f:'a -> 'b) (l:'a list) : ('b * 'a list) list =
-  let ht = Hashtbl.create 17 in
-  List.iter l ~f:(fun v ->
-                  let key = f v in
-                  try
-                    let previous = Hashtbl.find ht key in
-                    Hashtbl.replace ht ~key ~data:(v::previous)
-                  with Not_found ->
-                    Hashtbl.add ht ~key ~data:[v]
-               );
-  Hashtbl.fold ht
-    ~f:(fun ~key ~data acc -> (key,data)::acc)
-    ~init:[]
-
-
-let program_name () : string =
-  Filename.basename (Sys.executable_name)
-
-(** Prints *)
-let print_usage_msg
-    ?(header:string option)
-    ?(footer:string option)
-    ?(program_name = program_name ())
-    ?(usage:string option)
-    ~(group:'a -> string option)
-    ~(name:'a -> string)
-    ~(descr:'a -> string)
-    (typ:string)
-    (multi:'a list) : unit =
-  let padlen =
-    List.fold_left multi
-      ~f:(fun acc c -> max acc (String.length (name c)))
-      ~init:0
-  in
-  Printf.printf "Usage: %s" program_name;
-  begin match usage with
-  | None           -> print_newline ()
-  | Some usage_arg -> print_endline (" " ^ usage_arg)
-  end;
-  begin match header with
-  | None -> ()
-  | Some s ->
-      print_newline ();
-      print_endline s;
-  end;
-  List.iter (List.sort ~cmp:compare (group_by multi ~f:group))
-    ~f:(fun (group,multi) ->
-          print_newline ();
-          begin match group with
-          | Some v -> print_endline (v ^ ":")
-          | None -> print_endline (typ ^ ":")
-          end;
-          List.iter multi
-            ~f:(fun f ->
-                  Printf.printf "%s  %s\n"
-                    (pad_right (name f) padlen)
-                    (descr f)));
-  begin match footer with
-  | None -> ()
-  | Some s ->
-      print_newline ();
-      print_endline s
-  end
-
-let print_help_msg
-    ?(header:string option)
-    ?(footer:string option)
-    ?(program_name:string option)
-    ?(usage:string option)
-    (flags:'a list) : unit =
-  let has_short =
-    List.exists flags ~f:(fun f -> f.short <> None)
-  in
-  print_usage_msg
-    ?header
+let raise_bad fmt = Printf.ksprintf (fun s -> raise (Bad s)) fmt
+let raise_help ?header ?footer ?synopsis ~name arguments =
+  let msg = Parse_opt__usage_msg.usage ?header
     ?footer
-    ?program_name
-    ?usage
-    ~name:(fun flag ->
-             let long =
-               match flag.arg with
-               | `No_arg _  -> Printf.sprintf "--%s" flag.long
-               | `Arg (v,_) -> Printf.sprintf "--%s=%s" flag.long
-                   (String.uppercase v)
-             in
-             match flag with
-             | {short = None;_} when has_short -> "   " ^ long
-             | {short = None;_} -> long
-             | {short = Some short;_} ->
-                 Printf.sprintf "-%c %s" short long)
-    ~group:(fun v -> v.group)
-    ~descr:(fun v -> v.descr)
-    "Flags"
-    flags
+    ?synopsis
+    ~name
+    arguments
+  in raise (Help msg)
 
-let to_string_main f =
-  match f with
-  | {short = None;_} -> Printf.sprintf "--%s" f.long
-  | {short = Some short;_} ->
-      Printf.sprintf "-%c --%s" short f.long
+let argv () : string list = List.tl (Array.to_list Sys.argv)
+let program_name () : string = Filename.basename (Sys.executable_name)
 
-let to_string f =
-  let main = to_string_main f in
-  match f with
-  | {arg = `No_arg _ ;_} -> main
-  | {arg = `Arg (g,_);_} -> main ^ " " ^ g
-
-let is_short s =
-  let len = String.length s in
-  len >= 2 && s.[0] = '-' && s.[1] <> '-'
-
-let is_long s =
-  let len = String.length s in
-  len >= 3 && s.[0] = '-' && s.[1] = '-'
-
-let find_long ~flags name =
-  let stripped = String.sub name ~pos:2 ~len:(String.length name - 2) in
-  try
-    List.find ~f:(fun x -> x.long = stripped) flags
-  with Not_found ->
-    raise (Unknown_flag name)
-
-let find_short ~flags name =
-  try
-    List.find ~f:(fun x -> x.short = Some name) flags
-  with Not_found ->
-    raise (Unknown_flag (Printf.sprintf "-%c" name))
-
-type state =
-  | St_normal
-  | St_short of (int * string)
-  | St_annon (* We've already seen -- all arguments from now on are anonymous *)
-
-type 'a res =
-  | Eof
-  | Annon of string
-  | Flag of 'a
-
-type 'a cursor = {
-  flags : 'a t list;
-  mutable state : state;
-  mutable remaining : string list;
-}
-
-let short_arg flag state = match state with
-  | {state=St_short (pos,f);_} ->
-      state.state <- St_normal;
-      String.sub f ~pos ~len:(String.length f - pos)
-  | {state=St_normal;remaining=h::t;_} ->
-      state.remaining <- t;
-      h
-  | {state=St_annon;_} ->
-      (* TODO: comment why this is impossible *)
-      assert false
-  | {state=St_normal;remaining = [];_} ->
-      match flag.short with
-      | None -> assert false
-      | Some c -> raise (Missing_argument ( Printf.sprintf "-%c" c))
+let take_from ~pos s = String.sub s ~pos ~len:(String.length s - pos)
 
 (** Split a long flag aroung the = sign *)
-let split_long s =
+let split_long (s:string) : string * string option =
   try
     let idx = String.index s '=' in
     let flag = String.sub s ~len:idx ~pos:0 in
@@ -203,122 +29,264 @@ let split_long s =
   with Not_found ->
     s,None
 
-let rec get: 'a.'a cursor -> 'a res = fun state ->
-  match state with
-  | {state=St_short (pos,f);flags;_} ->
-      if pos+1 >= String.length f then begin
-        state.state <- St_normal
-      end else begin
-        state.state <- St_short (pos+1,f)
-      end;
-      let flag = find_short ~flags f.[pos] in
-      Flag (begin match flag.arg with
-            | `Arg (_,f) -> f (short_arg flag state)
-            | `No_arg v  -> v
-            end)
-  | { remaining = h::t; state = St_annon;_ } ->
-      state.remaining <- t;
-      Annon h
-  | { remaining = []; state = (St_normal | St_annon);_ } -> Eof
-  | { remaining = "--"::x;_ } as v ->
-      v.state <- St_annon;
-      v.remaining <- x;
-      get state
-  | { remaining = h::t;state=St_normal;flags} as v ->
-      if is_short h then begin
-        v.state <- St_short (1,h);
-        v.remaining <- t;
-        get v
-      end else if is_long h then
-        let flag_name,arg = split_long h in
-        let flag = find_long ~flags flag_name in
-        Flag (match flag.arg,arg,t with
-              | `Arg (_,f),Some v,l | `Arg (_,f),None,v::l ->
-                  state.remaining <- l;
-                  f v
-              | `No_arg v,None,l ->
-                  state.remaining <- l;
-                  v
-              | `Arg _,None,[] ->
-                  raise (Missing_argument flag_name)
-              | `No_arg _ ,Some _,_ ->
-                  raise (Flag_doesnt_take_an_argument flag_name))
-      else begin
-        state.remaining <- t;
-        Annon h
-      end
+let is_short_flag (s:string) : bool =
+  String.length s >= 2 && s.[0] = '-' && s.[1] <> '-'
 
-let init flags remaining = {
-  remaining;
-  flags;
-  state = St_normal
+let is_long_flag (s:string) : bool =
+  String.length s >= 3 && s.[0] = '-' && s.[1] = '-'
+
+(* Parsing *)
+type 'a res = (* Result of calling the state machine *)
+  | Eof
+  | Annon of string
+  | Flag of 'a
+
+type 'a arg_descr = [
+  | `No_arg of 'a
+  | `Arg    of string * (string -> 'a)
+]
+
+(** { Parsing the argument as a state machine.} *)
+type state_no_error = [
+| `St_normal of string list (* Starting state. *)
+| `St_short  of (int * string * string list) (* Parsing a short argument *)
+      (*
+         ... -acjl ...
+                ^
+      *)
+| `St_annon of string list (* *)
+      (* We've already seen "--"
+         all arguments from now on are anonymous
+         ... -- ... v ...
+                    ^
+      *)
+]
+
+type state = [ `St_error of exn | state_no_error ]
+
+(** This represents a type. All flags *)
+type 'a flag = {
+  long    : string;
+  descr   : string;
+  arg     : [ 'a arg_descr | `Help ];
+  group   : string option;
+  short   : char option;
 }
 
-(** Grouping *)
-let get_all : 'a.'a t list -> string list -> string list * 'a list =
-  fun flags args ->
-    let input = init flags args in
+type 'a cursor = {
+  name : string;
+  footer : string option;
+  header : string option;
+  synopsis : string option;
+  flags : 'a flag list;
+  mutable state : state;
+}
+
+let help_flag = {
+  group=None;
+  long="help";
+  short=Some 'h';
+  arg=`Help;
+  descr="print this help message"
+}
+
+let find_long cursor (name:string) : 'a flag =
+  let stripped = String.sub name ~pos:2 ~len:(String.length name - 2) in
+  try
+    List.find ~f:(fun x -> x.long = stripped) cursor.flags
+  with Not_found ->
+    raise_bad "Unknown flag %s" name
+
+let find_short cursor (name:char) : 'a flag =
+  try
+    List.find ~f:(fun x -> x.short = Some name) cursor.flags
+  with Not_found ->
+    raise_bad "Unknown flag -%c" name
+
+type 'a transition = state * 'a res
+
+let help cursor =
+  let has_short =
+    List.exists cursor.flags ~f:(fun f -> f.short <> None)
+  in
+  let flag_usage flag =
+    let long =
+      match flag.arg with
+      | `Help | `No_arg _  -> Printf.sprintf "--%s" flag.long
+      | `Arg (v,_)         -> Printf.sprintf "--%s=%s" flag.long
+          (String.uppercase v)
+    in
+    match flag with
+    | {short = None;_} when has_short -> "   " ^ long
+    | {short = None;_}               -> long
+    | {short = Some short;_}         -> Printf.sprintf "-%c %s" short long
+  in
+  raise_help
+    ?header:cursor.header
+    ?footer:cursor.footer
+    ?synopsis:cursor.synopsis
+    ~name:cursor.name
+    ["Flags",
+     (List.map cursor.flags
+        ~f:(fun f -> f.group,flag_usage f,f.descr))]
+
+(** A short flag taking an argument:
+    [f] : function to build the return value *)
+let short_arg ~name f : _ -> _ transition = function
+  | `St_short (pos,s,l) -> `St_normal l,Flag (f (take_from s ~pos))
+  | `St_normal (arg::t) -> `St_normal t,Flag (f arg)
+  | `St_normal []       -> raise_bad "missing argument for flag -%c" name
+
+(** a short flag (in a string)
+    [f] the string containing the short flag (e.g. -avz)
+    [pos] the position in that string
+    [l] the list of remaining arguments
+*)
+let short cursor pos f l : _ transition =
+  let state =
+    if pos+1 >= String.length f then `St_normal l
+    else `St_short (pos+1,f,l)
+  in
+  let name = f.[pos] in
+  let flag = find_short cursor name in
+  match flag.arg with
+  | `Arg (_,f) -> short_arg ~name f state
+  | `No_arg v  -> state,Flag v
+  | `Help -> help cursor
+
+(* The start state of our FSM;
+   [v] the argument we are currently parsing
+   [args] the remaining arguments
+*)
+let normal cursor v args : _ transition =
+  if is_short_flag v then
+    short cursor 1 v args (* 1 is to skip the - sign *)
+  else if is_long_flag v then
+    let flag_name,arg = split_long v in
+    let flag = find_long cursor flag_name in
+    match flag.arg,arg,args with
+    | `Help,_,_            -> help cursor
+    | `Arg (_,f),Some v,l
+    | `Arg (_,f),None,v::l -> `St_normal l,Flag (f v)
+    | `No_arg v,None,l     -> `St_normal l,Flag v
+    | `Arg _,None,[]       -> raise_bad "Missing argument for flag %s" flag_name
+    | `No_arg _ ,Some _,_  -> raise_bad "Flag %s doesn't take an argument" flag_name
+  else
+    `St_normal args,Annon v
+
+let next cursor = function
+  | `St_annon (h::t)                      -> `St_annon t,Annon h
+  | `St_normal ([]|["--"]) | `St_annon [] -> `St_annon [],Eof
+  | `St_normal ("--"::v::l)               -> `St_annon l,Annon v
+  | `St_normal (v::args)                  -> normal cursor v args
+  | `St_short (pos,f,l)                   -> short cursor pos f l
+
+let get cursor =
+  match cursor.state with
+  | `St_error e -> raise e
+  | #state_no_error as state ->
+      try
+        let state,res = next cursor state in
+        cursor.state <- state;
+        res
+      with e ->
+        cursor.state <- `St_error e;
+        raise e
+
+let flag ?group ?short ~(arg:_ arg_descr) ~descr long = {
+  long;descr;group;short;
+  arg=(arg:>[`Help|_ arg_descr])
+}
+
+let long (v:_ flag) : string = v.long
+
+let init ?synopsis ?header ?footer ?(name=program_name ()) ?(args=argv ()) flags
+    =
+  let flags = help_flag :: flags in
+  { header; footer;synopsis;
+    name;
+    flags;
+    state = `St_normal args }
+
+let to_string f =
+  let main =
+    match f with
+    | {short = None;_} -> Printf.sprintf "--%s" f.long
+    | {short = Some short;_} ->
+        Printf.sprintf "-%c --%s" short f.long
+  in
+  match f with
+  | {arg = (`Help | `No_arg _) ;_} -> main
+  | {arg = `Arg (g,_);_}           -> main ^ " " ^ g
+
+let run ?synopsis ?header ?footer ?name ?(flags=[]) ?args ?(exit_on_error=true)
+    ()
+    =
+  let cursor = init ?name ?args ?header ?footer ?synopsis flags in
+  try
     let rec loop flags annon =
-      match get input with
+      match get cursor with
       | Annon a -> loop flags (a :: annon)
       | Flag v -> loop (v :: flags) annon
       | Eof ->   List.rev annon,List.rev flags
     in
     loop [] []
+  with
+  | Help s when exit_on_error ->
+      print_endline s;
+      exit 0
+  | Bad s when exit_on_error  ->
+      prerr_endline s;
+      exit 1
 
-module Multi = struct
-  let is_prefix (needle:string) (haystack:string) : bool =
-    let len = String.length needle in
-    len <= String.length haystack && (
-      String.sub haystack ~pos:0 ~len = needle  )
+let is_prefix (needle:string) (haystack:string) : bool =
+  let len = String.length needle in
+  len <= String.length haystack && (
+    String.sub haystack ~pos:0 ~len = needle  )
 
-  let rec find_by_name__loop acc name = function
-    | (k,v)::_ when k = name -> `Found v
-    | (k,_ as v)::l when is_prefix name k -> find_by_name__loop (v::acc) name l
-    | _::l -> find_by_name__loop acc name l
-    | [] ->
-        match acc with
-        | [_,v] -> `Found v
-        | [] ->  `Unknown name
-        | l -> `Ambiguous (name,l)
+(** Prints *)
+type 'a cmd = {
+  name : string;
+  group : string option;
+  choice : name:string -> args:string list -> 'a;
+  descr : string }
 
-  let find_by_name (name:string) (l:(string * 'a) list) =
-    find_by_name__loop [] name l
+let rec find_by_name__loop acc needle = function
+  | ({name;_} as v)::_ when name = needle -> v
+  | ({name;_} as v)::l when is_prefix needle name ->
+      find_by_name__loop (v::acc) needle l
+  | _::l -> find_by_name__loop acc needle l
+  | [] ->
+      match acc with
+      | [v] -> v
+      | []  -> raise_bad "Unknown command %S\n" needle
+      | l   -> raise_bad "Ambiguous command\n\n%S could be one of\n%s\n"
+          needle
+          (String.concat ~sep:" " (List.map ~f:(fun v -> v.name) l))
 
-  type 'a t = {
-    name : string;
-    group : string option;
-    choice : string list -> 'a;
-    descr : string }
+let find_by_name (name:string) (l:'a cmd list) =
+  find_by_name__loop [] name l
 
-  let argv () = List.tl (Array.to_list Sys.argv)
-
-  let run
-      ?(program_name:string option)
-      ?(args=argv ())
-      choices =
+let multi_run
+    ?(name=program_name ())
+    ?(args=argv ())
+    ?(exit_on_error=true)
+    choices =
+  try
     match args with
     | [] | "help"::_ | "--help"::_ ->
-        print_usage_msg
-          ?program_name
-          ~name:(fun v -> v.name)
-          ~descr:(fun v -> v.descr)
-          ~group:(fun v -> v.group)
-          "Commands"
-          choices;
-        exit 0
+        raise_help
+          ~name
+          ["Commands",
+           List.map choices
+             ~f:(fun v -> v.group,v.name,v.descr)]
     | h::t ->
-        match find_by_name
-          h
-          (List.map ~f:(fun v -> v.name,v) choices)
-        with
-        | `Ambiguous (_,possible) ->
-            Printf.eprintf "Ambiguous command\n\n%S could be one of\n%s\n"
-              h
-              (String.concat ~sep:" " (List.map ~f:fst possible));
-            exit 1
-        | `Unknown _ ->
-            Printf.eprintf "Unknown command %S\n" h;
-            exit 1
-        | `Found v -> v.choice t
-end
+        let v = find_by_name h choices in
+        v.choice ~name:(name ^ " " ^ h) ~args:t
+  with
+  | Help s when exit_on_error ->
+      print_endline s;
+      exit 0
+  | Bad s when exit_on_error  ->
+      prerr_endline s;
+      exit 1

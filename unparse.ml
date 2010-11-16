@@ -1,16 +1,12 @@
 open StdLabels
 open MoreLabels
-open Util
 include Kernel
-exception Help
-exception In_flag of Kernel.option_value Parse_opt.t * exn
 
 let int name = create ~name int_of_string
 let string name = create ~name (fun s -> s)
 let float name = create ~name float_of_string
 
-let mapf ~f v =
-  Kernel.cps_map ~f:(fun v -> Staged.map ~f v) v
+let mapf ~f v = Kernel.cps_map ~f:(fun v -> Staged.map ~f v) v
 
 let bool_flag ?short ?group ~descr long =
   mapf (flag ?short ?group ~descr long (const ()))
@@ -23,8 +19,7 @@ let map' ~f v =
   Kernel.(
     let s =
       cps_map v
-        ~f:(fun acc ->
-              (Staged.create (f acc)))
+        ~f:(fun acc -> (Staged.create (f acc)))
     in
     map_cont ~f:Staged.run s)
 
@@ -56,27 +51,13 @@ let non_empty_list v =
           | [] -> failwith "The argument list must not be empty"
           | l -> l)
 
-let help () =
-  iter (bool_flag ~short:'h' ~descr:"show this help message" "help")
-    ~f:(fun found -> if found then raise Help)
-
-let () =
-  Printexc.register_printer
-    (function
-       | In_flag (f,e) ->
-           Some (Printf.sprintf "In flag [%s] : %s"
-                   (Parse_opt.to_string f)
-                   (Printexc.to_string e))
-       | _ -> None)
-
-let is_quote_char = function
-  | '-' | '_' | '0'..'9' | 'a'..'z' | 'A'..'Z' -> false
-  | _ -> true
-
-let maybe_quote s =
+let maybe_quote_filename s =
   let must_quote =
     try
-      String.iter s ~f:(fun c -> if is_quote_char c then raise Exit); false
+      String.iter s ~f:(function
+                          | '-' | '_' | '0'..'9' | 'a'..'z' | 'A'..'Z' -> ()
+                          | _ -> raise Exit);
+      false
     with Exit -> true
   in
   if must_quote then
@@ -84,50 +65,46 @@ let maybe_quote s =
   else
     s
 
-let err_handler program_name fmt exn =
-  let gram = Kernel.gram fmt in
-  let usage = String.uppercase (Doc.to_string gram) in
-  match exn with
-  | Help ->
-      Parse_opt.print_help_msg ?program_name ~usage (Kernel.flags fmt);
-      exit 0
+let err_handler = function
   | Kernel.Extra_arguments l ->
-      prerr_endline usage;
       prerr_string "Too many arguments provided on the command line; \
                      don't know what to do with: ";
-      prerr_endline (String.concat ~sep:" " (List.map ~f:maybe_quote l));
+      prerr_endline
+        (String.concat ~sep:" " (List.map ~f:maybe_quote_filename l));
       exit 1
   | Kernel.Not_enough_arguments ->
-      prerr_endline usage;
       prerr_endline "Not enough arguments provided on the command line";
       exit 1
   | e ->
       prerr_endline (Printexc.to_string e);
       exit 1
 
-let argv () = List.tl (Array.to_list Sys.argv)
-
-let run ?name ?(args=argv ()) fmt =
-  let fmt = help () ++ fmt in
+let run ?name ?args fmt f =
   let flags = Kernel.flags fmt in
-  let annon,flagged = Parse_opt.get_all flags args in
-  Kernel.parse ~fail:(err_handler name fmt) ~flags:flagged annon fmt
+  let synopsis = match (gram fmt) with
+    | x when x = Doc.empty -> None
+    | v -> Some (Doc.to_string v)
+  in
+  let annon,flagged = Parse_opt.run ~flags ?args ?name ?synopsis () in
+  let v =
+    try
+      Kernel.parse ~flags:flagged annon fmt f
+    with e ->  err_handler e
+  in
+  Staged.run v
 
 (** we take the accumulator and make it an int... *)
 let set_acc fmt f = mapf fmt ~f:(fun () -> f)
 
-type 'a choice = 'a Parse_opt.Multi.t
+type 'a choice = 'a Parse_opt.cmd
 
 let choice ?group ~descr ~name ~f fmt =
-  { Parse_opt.Multi.name;
+  { Parse_opt.name;
     descr;
     group;
-    choice = fun args ->
-      run
-        ~name
-        ~args
-        fmt
-        f }
+    choice = fun ~name ~args -> run ~name ~args fmt f}
 
 let multi_run ?name (choices:'a choice list) : 'a =
- Parse_opt.Multi.run ?program_name:name choices
+ Parse_opt.multi_run
+   ?name
+   choices

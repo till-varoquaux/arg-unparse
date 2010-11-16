@@ -17,6 +17,7 @@ let pad_right (s:string) (length:int) : string =
 type group = string
 type name = string
 type descr = string
+
 let by_groups (l:(group option * name * descr) list) :
     (group option * (name * descr) list) list =
   let ht = Hashtbl.create 17 in

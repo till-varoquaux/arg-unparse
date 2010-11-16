@@ -8,6 +8,8 @@ doc : intro intro.html
 
 intro:
 	ocamlbuild -cflags -dtypes intro.native
+	ocamlbuild doc.docdir/index.html
+
 
 clean::
 	rm -f *~

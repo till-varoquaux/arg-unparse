@@ -7,13 +7,9 @@ type t =
   | Leaf of string
   | Empty
 
-let (^/^) x y = match x,y with
-  | "",x | x,"" -> x
-  | _ -> x ^ " " ^ y
-
 let rec to_string__loop ?(in_seq=false) = function
   | Seq (l,r) ->
-      to_string__loop ~in_seq:true l ^/^ to_string__loop ~in_seq:true r
+      to_string__loop ~in_seq:true l ^" "^ to_string__loop ~in_seq:true r
   | Leaf s -> s
   | Or (_) as x when in_seq -> "(" ^ to_string__loop x ^ ")"
   | Or (l,r) -> to_string__loop l ^ "|" ^ to_string__loop r

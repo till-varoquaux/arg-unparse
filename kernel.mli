@@ -1,4 +1,4 @@
-type option_value
+type flag_value
 
 type perm = [ `Parse_opt | `Scalar | `Non_linear | `Linear ]
 type scalar = perm
@@ -6,7 +6,7 @@ type normal = [ `Non_linear | `Linear ]
 type linear = [ `Linear ]
 type flag = [ `Parse_opt | `Linear ]
 
-type (+'perm,-'acc,+'cont) t constraint 'perm = [< perm > `Linear]
+type (+'perm,'acc,'cont) t constraint 'perm = [< perm > `Linear]
 
 exception Not_enough_arguments
 exception Extra_arguments of string list
@@ -28,9 +28,11 @@ val const : 'a -> ([< scalar],'a -> 'k,'k) t
 
 val create : name:string -> (string -> 'a) -> ([< scalar ],'a -> 'b,'b) t
 
+(* TODO: Delete me *)
 val gram : (_,_,_) t -> Doc.t
-val flags : (_,_,_) t -> option_value Parse_opt.t list
+val flags : (_,_,_) t -> flag_value Parse_opt.flag list
 
+(* TODO: delete me *)
 val set_gram : ('a,'b,'c) t -> Doc.t -> ('a,'b,'c) t
 
 val map_cont :
@@ -52,7 +54,8 @@ val list :
   -> ([< normal ],'a list -> 'k,'k) t
 
 val parse :
-  ?fail:(exn -> 'b)
-  -> flags: option_value list
+  flags: flag_value list
   -> string list
-  -> (_,'a,'b) t -> 'a -> 'b
+  -> (_,'a,'b) t
+  -> 'a
+  -> 'b Staged.t
